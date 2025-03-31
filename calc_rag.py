@@ -3,68 +3,68 @@ import torch
 import re
 
 class InferenceRAGLogitsProcessor(LogitsProcessor):
-    def __init__(self, tokenizer, retriever, boost=30.0):
+    def __init__(self, tokenizer, retriever):
         self.tokenizer = tokenizer
         self.calc_function = retriever
-        self.boost = boost
-        self.calc_to_result_token_ids = {}
 
-    def set_prompt(self, prompt):
-        # 提取所有 [CALC: ... :] 并计算结果
-        pattern = r"\[CALC:(.+?):\]"
-        matches = re.findall(pattern, prompt)
-        for query in matches:
-            query_clean = query.strip()
-            try:
-                result = self.calc_function(query_clean)
-                result_str = f"[RESULT:{result}:]"
-                result_token_ids = self.tokenizer.encode(result_str, add_special_tokens=False)
-                self.calc_to_result_token_ids[query_clean] = result_token_ids
-            except Exception as e:
-                print(f"⚠️ Error calculating '{query_clean}': {e}")
+        self.active_calc = None
+        self.inject_result = False
+        self.result_tokens = None
+        self.inject_index = 0
+        self.calc_cache = {}     
 
-    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        # 获取当前生成的文本
-        text_so_far = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+    def __call__(self, input_ids, scores):
+        prompt_ids = tokenizer(input_text, return_tensors="pt")["input_ids"][0]
+        prompt_len = prompt_ids.shape[0]
+        generated_ids = input_ids[0][prompt_len:] 
+        text_so_far = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        # Extract the latest calculation query
+        calc_matches = re.findall(r"\[CALC:\s*([\d+\-*/(). ]+?)\s*:\]", text_so_far)
+        result_matches = re.findall(r"\[RESULT:\s*([0-9.eE+-]+)\s*:\]", text_so_far)
+        if calc_matches and len(calc_matches)!=len(result_matches):
+            last_calc = calc_matches[-1].strip()
+            if last_calc != self.active_calc:
+                self.active_calc = last_calc
+                if last_calc in self.calc_cache:
+                    result = self.calc_cache[last_calc]
+                else:
+                    try:
+                        result = self.calc_function(last_calc)
+                        #777275194773.0
+                    except Exception:
+                        result = "ERROR"
+                    if len(result) > 15:
+                        result = "OVERFLOW"
+                    # Save in cache
+                    self.calc_cache[last_calc] = result
+                result_str = f" [RESULT:{result}:]"
+                self.result_tokens = self.tokenizer.encode(result_str, add_special_tokens=False)
+                self.inject_index = 0
+                self.inject_result = True
 
-        # 找到最近的 [CALC: ... :]
-        calc_matches = re.findall(r"\[CALC:(.+?):\]", text_so_far)
-        if not calc_matches:
+        # Ensure proper result injection
+        if  self.inject_result and self.result_tokens and self.inject_index < len(self.result_tokens):
+            scores[:, self.result_tokens[self.inject_index ]] += 100  # Bias toward `[RESULT:` token
+            self.inject_index += 1
+            if self.result_tokens and self.inject_index >= len(self.result_tokens):
+                calc_matches = None
+                self.result_tokens = []
+                self.inject_index = 0
+                self.active_calc = None  # 允许处理下一个 CALC 表达式
+                self.inject_result = False
             return scores
-
-        latest_query = calc_matches[-1].strip()
-        if latest_query not in self.calc_to_result_token_ids:
-            return scores
-
-        expected_ids = self.calc_to_result_token_ids[latest_query]
-        generated_ids = input_ids[0].tolist()
-
-        # 对比当前生成位置，尝试引导模型生成 result token
-        result_so_far = []
-        for i in reversed(range(len(generated_ids))):
-            result_so_far.insert(0, generated_ids[i])
-            if result_so_far == expected_ids[:len(result_so_far)]:
-                break
-
-        next_index = len(result_so_far)
-        if next_index < len(expected_ids):
-            next_token_id = expected_ids[next_index]
-            scores[0, next_token_id] += self.boost
-
+        
         return scores
+    
 
-
-# ======================
-# 🧮 sympy 计算函数
-# ======================
 from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessorList
-
 
 
 import sympy
 
 
 def calc_sympy(query):
+    
     r = str(sympy.sympify(query))
     return r
 
@@ -78,8 +78,9 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
 )
 
-logits_processor = InferenceRAGLogitsProcessor(tokenizer, calc_sympy)
 
+logits_processor = InferenceRAGLogitsProcessor(tokenizer, calc_sympy)
+logits_processor_list = LogitsProcessorList([logits_processor])
 
 
 input_text = """
@@ -100,8 +101,6 @@ Provide your response below:
 """
 
 
-logits_processor.set_prompt(input_text)
-logits_processor_list = LogitsProcessorList([logits_processor])
 input_ids = tokenizer(input_text, return_tensors="pt")
 
 from transformers import TextStreamer
