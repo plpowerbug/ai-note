@@ -1,0 +1,15 @@
+flowchart TD
+
+    A[Start: Retriever is invoked]
+    B{Is self.active True?}
+    B -->|No| C[Check regex match in input_text]
+    C -->|Match| D[Extract query from input_text Call get_result]
+    D --> E[Set self.response = RESULT:response:]
+    E --> F[Encode response into tokens Prepare mask]
+    F --> G[on_condition_met Set active=True]
+    G --> H[Return modified scores]
+
+    B -->|Yes| I[Check if response is fully injected]
+    I -->|No| J[on_active Increment index]
+    J --> H
+    I -->|Yes| K[Set active=False Return scores]
