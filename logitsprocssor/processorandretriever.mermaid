@@ -1,0 +1,47 @@
+classDiagram
+    %% 抽象基础类
+    class LogitsProcessor {
+        <<abstract>>
+        +__call__(input_ids, scores)
+    }
+
+    class InferenceRetriever {
+        <<abstract>>
+        +check_condition(input_ids, scores)
+        +on_condition_met(input_ids, scores)
+        +on_active(input_ids, scores)
+        +step_active(input_ids, scores)
+    }
+
+    %% 主控制器
+    class InferenceLogitsProcessor {
+        -tokenizer
+        -retrievers: dict[str, InferenceRetriever]
+        -active: bool
+        -active_retriever: str
+        +__call__(input_ids, scores)
+    }
+
+    %% 正则插件
+    class RegexMatchResultAppendRetriever {
+        -tokenizer
+        -regex
+        -response
+        -current_token_index
+        -active
+        +check_condition(...)
+        +on_condition_met(...)
+        +on_active(...)
+        +step_active(...)
+        +get_result(query)
+    }
+
+    %% 实例插件：计算器
+    class CalcRetriever {
+        +get_result(query)
+    }
+
+    %% 继承关系箭头
+    LogitsProcessor <|-- InferenceLogitsProcessor
+    InferenceRetriever <|-- RegexMatchResultAppendRetriever
+    RegexMatchResultAppendRetriever <|-- CalcRetriever
