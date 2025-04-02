@@ -1,0 +1,16 @@
+flowchart TD
+    A[Start: __call__ is invoked]
+    B{Is self.active and step_active True?}
+    C[Call on_active and update scores]
+    D[Set self.active = False and active_retriever = None]
+    E[Loop through retrievers and call check_condition]
+    F{Did any retriever match?}
+    G[Set self.active = True and store retriever name]
+    H[Call on_condition_met]
+    I[Return scores]
+
+    A --> B
+    B -->|Yes| C --> I
+    B -->|No| D --> E --> F
+    F -->|Yes| G --> H --> I
+    F -->|No| I
